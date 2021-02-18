@@ -14,6 +14,7 @@ import io.zeebe.engine.processing.streamprocessor.TypedRecordProcessor;
 import io.zeebe.engine.processing.streamprocessor.writers.TypedResponseWriter;
 import io.zeebe.engine.processing.streamprocessor.writers.TypedStreamWriter;
 import io.zeebe.engine.state.KeyGenerator;
+import io.zeebe.engine.state.immutable.JobState;
 import io.zeebe.engine.state.immutable.VariablesState;
 import io.zeebe.engine.state.mutable.MutableJobState;
 import io.zeebe.msgpack.value.DocumentValue;
@@ -39,7 +40,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 
 public final class JobBatchActivateProcessor implements TypedRecordProcessor<JobBatchRecord> {
 
-  private final MutableJobState jobState;
+  private final JobState jobState;
   private final VariablesState variablesState;
   private final KeyGenerator keyGenerator;
   private final long maxRecordLength;
@@ -155,6 +156,9 @@ public final class JobBatchActivateProcessor implements TypedRecordProcessor<Job
 
             if (value.getJobs().isEmpty()) {
               raiseIncidentJobTooLargeForMessageSize(key, jobRecord, streamWriter);
+
+              // REMINDER PI: this code should move into the event applier for the incident with
+              // type ErrorType.MESSAGE_SIZE_EXCEEDED
               jobState.disable(key, jobRecord);
             }
 
@@ -172,6 +176,7 @@ public final class JobBatchActivateProcessor implements TypedRecordProcessor<Job
       final JobRecord jobRecord = iterator.next();
       final LongValue next1 = keyIt.next();
       final long key = next1.getValue();
+      // reminder PI: this needs to be moved to the event applier
       jobState.activate(key, jobRecord);
     }
   }
