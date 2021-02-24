@@ -5,7 +5,7 @@
  * Licensed under the Zeebe Community License 1.0. You may not use this file
  * except in compliance with the Zeebe Community License 1.0.
  */
-package io.zeebe.engine.state.instance;
+package io.zeebe.engine.state.variable;
 
 import io.zeebe.db.ColumnFamily;
 import io.zeebe.db.TransactionContext;
@@ -15,6 +15,8 @@ import io.zeebe.db.impl.DbLong;
 import io.zeebe.db.impl.DbString;
 import io.zeebe.engine.state.KeyGenerator;
 import io.zeebe.engine.state.ZbColumnFamilies;
+import io.zeebe.engine.state.instance.ParentScopeKey;
+import io.zeebe.engine.state.instance.TemporaryVariables;
 import io.zeebe.engine.state.mutable.MutableVariableState;
 import io.zeebe.msgpack.spec.MsgPackReader;
 import io.zeebe.msgpack.spec.MsgPackToken;
