@@ -13,6 +13,9 @@ import org.agrona.DirectBuffer;
 
 public interface VariablesState {
 
+  /** The value of the parent scope key for scope with no parents. */
+  long NO_PARENT = -1;
+
   DirectBuffer getVariableLocal(long scopeKey, DirectBuffer name);
 
   DirectBuffer getVariable(long scopeKey, DirectBuffer name);
@@ -30,4 +33,10 @@ public interface VariablesState {
   boolean isEmpty();
 
   void setListener(VariableListener listener);
+
+  /**
+   * @return returns the parent scope key of the given {@code childScopeKey}, or {@link
+   *     VariablesState#NO_PARENT}
+   */
+  long getParentScopeKey(long childScopeKey);
 }
