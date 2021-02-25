@@ -173,6 +173,7 @@ public final class TransformingDeploymentCreateProcessor
       sideEffect.accept(
           () -> {
             distributeDeployment(key, position, bufferView, streamWriter);
+            responseWriter.flush();
             return true;
           });
 
@@ -214,7 +215,7 @@ public final class TransformingDeploymentCreateProcessor
     deploymentRecord.wrap(buffer);
     final RecordMetadata recordMetadata = new RecordMetadata();
     recordMetadata
-        .intent(DeploymentIntent.DISTRIBUTED)
+        .intent(DeploymentIntent.FULLY_DISTRIBUTED)
         .valueType(ValueType.DEPLOYMENT)
         .recordType(RecordType.EVENT);
 
@@ -224,7 +225,11 @@ public final class TransformingDeploymentCreateProcessor
           logStreamWriter.reset();
           logStreamWriter.configureSourceContext(sourcePosition);
           logStreamWriter.appendFollowUpEvent(
-              deploymentKey, DeploymentIntent.DISTRIBUTED, deploymentRecord);
+              deploymentKey, DeploymentIntent.FULLY_DISTRIBUTED, deploymentRecord);
+
+          // todo(zell): this will move away on next PR's
+          // https://github.com/zeebe-io/zeebe/issues/6173
+          deploymentState.removeDeploymentRecord(deploymentKey);
 
           final long position = logStreamWriter.flush();
           if (position < 0) {
