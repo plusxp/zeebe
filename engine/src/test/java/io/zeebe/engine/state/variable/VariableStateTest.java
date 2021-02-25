@@ -511,9 +511,7 @@ public final class VariableStateTest {
     assertThat(parentScopeKey).isEqualTo(VariableState.NO_PARENT);
   }
 
-  /**
-   * Making sure the method is reusable and does not leave data structures dirty
-   */
+  /** Making sure the method is reusable and does not leave data structures dirty */
   @Test
   public void shouldSetVariablesFromDocumentRepeatedly() {
     // given
