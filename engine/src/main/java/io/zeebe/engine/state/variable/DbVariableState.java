@@ -19,7 +19,6 @@ import io.zeebe.engine.state.instance.ParentScopeKey;
 import io.zeebe.engine.state.instance.TemporaryVariables;
 import io.zeebe.engine.state.mutable.MutableVariableState;
 import io.zeebe.msgpack.spec.MsgPackReader;
-import io.zeebe.msgpack.spec.MsgPackToken;
 import io.zeebe.msgpack.spec.MsgPackWriter;
 import io.zeebe.util.buffer.BufferUtil;
 import java.util.Collection;
@@ -30,8 +29,6 @@ import java.util.function.Predicate;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.agrona.collections.Int2IntHashMap;
-import org.agrona.collections.Int2IntHashMap.EntryIterator;
 import org.agrona.collections.ObjectHashSet;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -68,7 +65,7 @@ public class DbVariableState implements MutableVariableState {
   private final ObjectHashSet<DirectBuffer> variablesToCollect = new ObjectHashSet<>();
 
   // setting variables
-  private final IndexedDocument indexedDocument = new IndexedDocument();
+  private final IndexedDocument indexedDocument = new IndexedDocument(reader);
   private final KeyGenerator keyGenerator;
 
   private VariableListener listener;
@@ -109,28 +106,44 @@ public class DbVariableState implements MutableVariableState {
   @Override
   public void setVariablesLocalFromDocument(
       final long scopeKey, final long workflowKey, final DirectBuffer document) {
-    reader.wrap(document, 0, document.capacity());
+    indexedDocument.index(document);
+    if (indexedDocument.isEmpty()) {
+      return;
+    }
 
-    final int variables = reader.readMapHeader();
+    for (final DocumentEntry entry : indexedDocument) {
+      setVariableLocal(scopeKey, workflowKey, entry.getName(), entry.getValue());
+    }
+  }
 
-    for (int i = 0; i < variables; i++) {
-      final MsgPackToken variableName = reader.readToken();
-      final int nameLength = variableName.getValueBuffer().capacity();
-      final int nameOffset = reader.getOffset() - nameLength;
+  @Override
+  public void setVariablesFromDocument(
+      final long scopeKey, final long workflowKey, final DirectBuffer document) {
+    indexedDocument.index(document);
+    if (indexedDocument.isEmpty()) {
+      return;
+    }
 
-      final int valueOffset = reader.getOffset();
-      reader.skipValue();
-      final int valueLength = reader.getOffset() - valueOffset;
+    long currentScope = scopeKey;
+    long parentScope;
 
-      setVariableLocal(
-          scopeKey,
-          workflowKey,
-          document,
-          nameOffset,
-          nameLength,
-          document,
-          valueOffset,
-          valueLength);
+    while ((parentScope = getParent(currentScope)) > 0) {
+      final Iterator<DocumentEntry> entryIterator = indexedDocument.iterator();
+
+      while (entryIterator.hasNext()) {
+        final DocumentEntry entry = entryIterator.next();
+        final boolean hasVariable = hasVariableLocal(currentScope, entry.getName());
+
+        if (hasVariable) {
+          setVariableLocal(currentScope, workflowKey, entry.getName(), entry.getValue());
+          entryIterator.remove();
+        }
+      }
+      currentScope = parentScope;
+    }
+
+    for (final DocumentEntry entry : indexedDocument) {
+      setVariableLocal(currentScope, workflowKey, entry.getName(), entry.getValue());
     }
   }
 
@@ -207,10 +220,9 @@ public class DbVariableState implements MutableVariableState {
     }
   }
 
-  private boolean hasVariableLocal(
-      final long scopeKey, final DirectBuffer name, final int nameOffset, final int nameLength) {
+  private boolean hasVariableLocal(final long scopeKey, final DirectBuffer name) {
     this.scopeKey.wrapLong(scopeKey);
-    variableNameView.wrap(name, nameOffset, nameLength);
+    variableNameView.wrap(name, 0, name.capacity());
     variableName.wrapBuffer(variableNameView);
 
     return variablesColumnFamily.exists(scopeKeyVariableNameKey);
@@ -276,67 +288,6 @@ public class DbVariableState implements MutableVariableState {
     } while (currentScopeKey >= 0);
 
     return null;
-  }
-
-  @Override
-  public void setVariablesFromDocument(
-      final long scopeKey, final long workflowKey, final DirectBuffer document) {
-    // 1. index entries in the document
-    indexedDocument.index(document);
-    if (!indexedDocument.hasEntries()) {
-      return;
-    }
-
-    long currentScope = scopeKey;
-    long parentScope;
-
-    // 2. overwrite any variables in the scope hierarchy
-    while ((parentScope = getParent(currentScope)) > 0) {
-      final DocumentEntryIterator entryIterator = indexedDocument.iterator();
-
-      while (entryIterator.hasNext()) {
-        entryIterator.next();
-
-        final boolean hasVariable =
-            hasVariableLocal(
-                currentScope,
-                document,
-                entryIterator.getNameOffset(),
-                entryIterator.getNameLength());
-
-        if (hasVariable) {
-          setVariableLocal(
-              currentScope,
-              workflowKey,
-              document,
-              entryIterator.getNameOffset(),
-              entryIterator.getNameLength(),
-              document,
-              entryIterator.getValueOffset(),
-              entryIterator.getValueLength());
-
-          entryIterator.remove();
-        }
-      }
-      currentScope = parentScope;
-    }
-
-    // 3. set remaining variables on top scope
-    final DocumentEntryIterator entryIterator = indexedDocument.iterator();
-
-    while (entryIterator.hasNext()) {
-      entryIterator.next();
-
-      setVariableLocal(
-          currentScope,
-          workflowKey,
-          document,
-          entryIterator.getNameOffset(),
-          entryIterator.getNameLength(),
-          document,
-          entryIterator.getValueOffset(),
-          entryIterator.getValueLength());
-    }
   }
 
   private long getParent(final long childKey) {
@@ -574,108 +525,5 @@ public class DbVariableState implements MutableVariableState {
         DirectBuffer value,
         long variableScopeKey,
         long rootScopeKey);
-  }
-
-  private class IndexedDocument implements Iterable<Void> {
-
-    // variable name offset -> variable value offset
-    private final Int2IntHashMap entries = new Int2IntHashMap(-1);
-    private final DocumentEntryIterator iterator = new DocumentEntryIterator();
-    private DirectBuffer document;
-
-    public void index(final DirectBuffer document) {
-      this.document = document;
-      entries.clear();
-      final int documentLength = document.capacity();
-
-      reader.wrap(document, 0, documentLength);
-
-      final int variables = reader.readMapHeader();
-
-      for (int i = 0; i < variables; i++) {
-        final int keyOffset = reader.getOffset();
-        reader.skipValue();
-        final int valueOffset = reader.getOffset();
-        reader.skipValue();
-
-        entries.put(keyOffset, valueOffset);
-      }
-    }
-
-    @Override
-    public DocumentEntryIterator iterator() {
-      iterator.wrap(document, entries.entrySet().iterator());
-      return iterator;
-    }
-
-    public boolean hasEntries() {
-      return !entries.isEmpty();
-    }
-  }
-
-  private class DocumentEntryIterator implements Iterator<Void> {
-
-    private EntryIterator iterator;
-    private DirectBuffer document;
-    private int documentLength;
-
-    // per entry
-    private int nameOffset;
-    private int nameLength;
-    private int valueOffset;
-    private int valueLength;
-
-    @Override
-    public boolean hasNext() {
-      return iterator.hasNext();
-    }
-
-    @Override
-    public Void next() {
-      iterator.next();
-
-      final int keyOffset = iterator.getIntKey();
-      valueOffset = iterator.getIntValue();
-
-      reader.wrap(document, keyOffset, documentLength - keyOffset);
-
-      nameLength = reader.readStringLength();
-      nameOffset = keyOffset + reader.getOffset();
-
-      reader.wrap(document, valueOffset, documentLength - valueOffset);
-      reader.skipValue();
-      valueLength = reader.getOffset();
-
-      return null;
-    }
-
-    @Override
-    public void remove() {
-      iterator.remove();
-    }
-
-    public void wrap(final DirectBuffer document, final EntryIterator iterator) {
-      this.iterator = iterator;
-      this.document = document;
-      documentLength = document.capacity();
-    }
-
-    /** excluding string header */
-    public int getNameOffset() {
-      return nameOffset;
-    }
-
-    public int getNameLength() {
-      return nameLength;
-    }
-
-    /** including header */
-    public int getValueOffset() {
-      return valueOffset;
-    }
-
-    public int getValueLength() {
-      return valueLength;
-    }
   }
 }
