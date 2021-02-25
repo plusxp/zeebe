@@ -117,37 +117,6 @@ public class DbVariableState implements MutableVariableState {
   }
 
   @Override
-  public void setVariablesFromDocument(
-      final long scopeKey, final long workflowKey, final DirectBuffer document) {
-    indexedDocument.index(document);
-    if (indexedDocument.isEmpty()) {
-      return;
-    }
-
-    long currentScope = scopeKey;
-    long parentScope;
-
-    while ((parentScope = getParent(currentScope)) > 0) {
-      final Iterator<DocumentEntry> entryIterator = indexedDocument.iterator();
-
-      while (entryIterator.hasNext()) {
-        final DocumentEntry entry = entryIterator.next();
-        final boolean hasVariable = hasVariableLocal(currentScope, entry.getName());
-
-        if (hasVariable) {
-          setVariableLocal(currentScope, workflowKey, entry.getName(), entry.getValue());
-          entryIterator.remove();
-        }
-      }
-      currentScope = parentScope;
-    }
-
-    for (final DocumentEntry entry : indexedDocument) {
-      setVariableLocal(currentScope, workflowKey, entry.getName(), entry.getValue());
-    }
-  }
-
-  @Override
   public void setVariableLocal(
       final long scopeKey,
       final long workflowKey,
@@ -220,6 +189,77 @@ public class DbVariableState implements MutableVariableState {
     }
   }
 
+  @Override
+  public void setVariablesFromDocument(
+      final long scopeKey, final long workflowKey, final DirectBuffer document) {
+    indexedDocument.index(document);
+    if (indexedDocument.isEmpty()) {
+      return;
+    }
+
+    long currentScope = scopeKey;
+    long parentScope;
+
+    while ((parentScope = getParent(currentScope)) > 0) {
+      final Iterator<DocumentEntry> entryIterator = indexedDocument.iterator();
+
+      while (entryIterator.hasNext()) {
+        final DocumentEntry entry = entryIterator.next();
+        final boolean hasVariable = hasVariableLocal(currentScope, entry.getName());
+
+        if (hasVariable) {
+          setVariableLocal(currentScope, workflowKey, entry.getName(), entry.getValue());
+          entryIterator.remove();
+        }
+      }
+      currentScope = parentScope;
+    }
+
+    for (final DocumentEntry entry : indexedDocument) {
+      setVariableLocal(currentScope, workflowKey, entry.getName(), entry.getValue());
+    }
+  }
+
+  @Override
+  public void createScope(final long childKey, final long parentKey) {
+    this.childKey.wrapLong(childKey);
+    this.parentKey.set(parentKey);
+
+    childParentColumnFamily.put(this.childKey, this.parentKey);
+  }
+
+  @Override
+  public void removeScope(final long scopeKey) {
+    this.scopeKey.wrapLong(scopeKey);
+
+    removeAllVariables(scopeKey);
+
+    childKey.wrapLong(scopeKey);
+    childParentColumnFamily.delete(childKey);
+  }
+
+  @Override
+  public void removeAllVariables(final long scopeKey) {
+    visitVariablesLocal(
+        scopeKey,
+        dbString -> true,
+        (dbString, variable1) -> variablesColumnFamily.delete(scopeKeyVariableNameKey),
+        () -> false);
+  }
+
+  @Override
+  public void setTemporaryVariables(final long scopeKey, final DirectBuffer variables) {
+    this.scopeKey.wrapLong(scopeKey);
+    temporaryVariables.set(variables);
+    temporaryVariableStoreColumnFamily.put(this.scopeKey, temporaryVariables);
+  }
+
+  @Override
+  public void removeTemporaryVariables(final long scopeKey) {
+    this.scopeKey.wrapLong(scopeKey);
+    temporaryVariableStoreColumnFamily.delete(this.scopeKey);
+  }
+
   private boolean hasVariableLocal(final long scopeKey, final DirectBuffer name) {
     this.scopeKey.wrapLong(scopeKey);
     variableNameView.wrap(name, 0, name.capacity());
@@ -237,15 +277,6 @@ public class DbVariableState implements MutableVariableState {
     } else {
       return null;
     }
-  }
-
-  private VariableInstance getVariableLocal(
-      final long scopeKey, final DirectBuffer name, final int nameOffset, final int nameLength) {
-    this.scopeKey.wrapLong(scopeKey);
-    variableNameView.wrap(name, nameOffset, nameLength);
-    variableName.wrapBuffer(variableNameView);
-
-    return variablesColumnFamily.get(scopeKeyVariableNameKey);
   }
 
   /**
@@ -288,13 +319,6 @@ public class DbVariableState implements MutableVariableState {
     } while (currentScopeKey >= 0);
 
     return null;
-  }
-
-  private long getParent(final long childKey) {
-    this.childKey.wrapLong(childKey);
-
-    final ParentScopeKey parentKey = childParentColumnFamily.get(this.childKey);
-    return parentKey != null ? parentKey.get() : NO_PARENT;
   }
 
   @Override
@@ -380,6 +404,46 @@ public class DbVariableState implements MutableVariableState {
     return resultView;
   }
 
+  @Override
+  public DirectBuffer getTemporaryVariables(final long scopeKey) {
+    this.scopeKey.wrapLong(scopeKey);
+    final TemporaryVariables variables = temporaryVariableStoreColumnFamily.get(this.scopeKey);
+
+    return variables == null || variables.get().byteArray() == null ? null : variables.get();
+  }
+
+  @Override
+  public boolean isEmpty() {
+    return variablesColumnFamily.isEmpty()
+        && childParentColumnFamily.isEmpty()
+        && temporaryVariableStoreColumnFamily.isEmpty();
+  }
+
+  @Override
+  public void setListener(final VariableListener listener) {
+    if (this.listener != null) {
+      throw new IllegalStateException("variable listener is already set");
+    }
+
+    this.listener = listener;
+  }
+
+  private VariableInstance getVariableLocal(
+      final long scopeKey, final DirectBuffer name, final int nameOffset, final int nameLength) {
+    this.scopeKey.wrapLong(scopeKey);
+    variableNameView.wrap(name, nameOffset, nameLength);
+    variableName.wrapBuffer(variableNameView);
+
+    return variablesColumnFamily.get(scopeKeyVariableNameKey);
+  }
+
+  private long getParent(final long childKey) {
+    this.childKey.wrapLong(childKey);
+
+    final ParentScopeKey parentKey = childParentColumnFamily.get(this.childKey);
+    return parentKey != null ? parentKey.get() : NO_PARENT;
+  }
+
   /**
    * Like {@link #visitVariablesLocal(long, Predicate, BiConsumer, BooleanSupplier)} but walks up
    * the scope hierarchy.
@@ -428,70 +492,6 @@ public class DbVariableState implements MutableVariableState {
           return !completionCondition.getAsBoolean();
         });
     return false;
-  }
-
-  @Override
-  public void createScope(final long childKey, final long parentKey) {
-    this.childKey.wrapLong(childKey);
-    this.parentKey.set(parentKey);
-
-    childParentColumnFamily.put(this.childKey, this.parentKey);
-  }
-
-  @Override
-  public void removeScope(final long scopeKey) {
-    this.scopeKey.wrapLong(scopeKey);
-
-    removeAllVariables(scopeKey);
-
-    childKey.wrapLong(scopeKey);
-    childParentColumnFamily.delete(childKey);
-  }
-
-  @Override
-  public void removeAllVariables(final long scopeKey) {
-    visitVariablesLocal(
-        scopeKey,
-        dbString -> true,
-        (dbString, variable1) -> variablesColumnFamily.delete(scopeKeyVariableNameKey),
-        () -> false);
-  }
-
-  @Override
-  public void setTemporaryVariables(final long scopeKey, final DirectBuffer variables) {
-    this.scopeKey.wrapLong(scopeKey);
-    temporaryVariables.set(variables);
-    temporaryVariableStoreColumnFamily.put(this.scopeKey, temporaryVariables);
-  }
-
-  @Override
-  public DirectBuffer getTemporaryVariables(final long scopeKey) {
-    this.scopeKey.wrapLong(scopeKey);
-    final TemporaryVariables variables = temporaryVariableStoreColumnFamily.get(this.scopeKey);
-
-    return variables == null || variables.get().byteArray() == null ? null : variables.get();
-  }
-
-  @Override
-  public void removeTemporaryVariables(final long scopeKey) {
-    this.scopeKey.wrapLong(scopeKey);
-    temporaryVariableStoreColumnFamily.delete(this.scopeKey);
-  }
-
-  @Override
-  public boolean isEmpty() {
-    return variablesColumnFamily.isEmpty()
-        && childParentColumnFamily.isEmpty()
-        && temporaryVariableStoreColumnFamily.isEmpty();
-  }
-
-  @Override
-  public void setListener(final VariableListener listener) {
-    if (this.listener != null) {
-      throw new IllegalStateException("variable listener is already set");
-    }
-
-    this.listener = listener;
   }
 
   private long getRootScopeKey(final long scopeKey) {
