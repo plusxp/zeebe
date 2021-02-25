@@ -18,7 +18,7 @@ import static org.mockito.Mockito.when;
 
 import io.zeebe.engine.processing.streamprocessor.TypedRecord;
 import io.zeebe.engine.state.ZeebeState;
-import io.zeebe.engine.state.immutable.VariablesState;
+import io.zeebe.engine.state.immutable.VariableState;
 import io.zeebe.engine.state.instance.ElementInstance;
 import io.zeebe.engine.state.mutable.MutableElementInstanceState;
 import io.zeebe.engine.state.mutable.MutableVariableState;
@@ -508,7 +508,7 @@ public final class VariableStateTest {
     final long parentScopeKey = variablesState.getParentScopeKey(parent);
 
     // then
-    assertThat(parentScopeKey).isEqualTo(VariablesState.NO_PARENT);
+    assertThat(parentScopeKey).isEqualTo(VariableState.NO_PARENT);
   }
 
   /**

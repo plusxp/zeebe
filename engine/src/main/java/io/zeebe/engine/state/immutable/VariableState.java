@@ -11,7 +11,7 @@ import io.zeebe.engine.state.variable.DbVariableState.VariableListener;
 import java.util.Collection;
 import org.agrona.DirectBuffer;
 
-public interface VariablesState {
+public interface VariableState {
 
   /** The value of the parent scope key for scope with no parents. */
   long NO_PARENT = -1;
@@ -36,7 +36,7 @@ public interface VariablesState {
 
   /**
    * @return returns the parent scope key of the given {@code childScopeKey}, or {@link
-   *     VariablesState#NO_PARENT}
+   *     VariableState#NO_PARENT}
    */
   long getParentScopeKey(long childScopeKey);
 }
